@@ -77,7 +77,7 @@ def validate_model(model, criterion, data_loader, device, num_val_mc_samples=100
     epoch_acc = running_corrects.double() / len(data_loader.dataset)
     return epoch_loss, epoch_acc
 
-def train_model(model, criterion, optimizer, scheduler, dataloaders, dataset_sizes, device, train_losses, train_accuracies, val_losses, val_accuracies, best_epoch, num_epochs=50, num_val_mc_samples=100, loss_weight=0.5, num_classes=1):
+def train_model(model, criterion, optimizer, scheduler, dataloaders, dataset_sizes, device, train_losses, train_accuracies, val_losses, val_accuracies, best_epoch, num_epochs=50, num_val_mc_samples=100, loss_weight=0.5, acc_weight=0, num_classes=1):
     since = time.time()
 
     best_combined_metric = 0.0
@@ -134,7 +134,7 @@ def train_model(model, criterion, optimizer, scheduler, dataloaders, dataset_siz
                     print(f'{phase.capitalize()} Loss: {epoch_loss:.4f}, {phase.capitalize()} Acc: {epoch_acc:.4f}')
                     
                     # Calculate combined metric
-                    combined_metric = epoch_acc - loss_weight * epoch_loss
+                    combined_metric = acc_weight * epoch_acc - loss_weight * epoch_loss
                     if combined_metric > best_combined_metric:
                         best_combined_metric = combined_metric
                         best_val_loss = epoch_loss
