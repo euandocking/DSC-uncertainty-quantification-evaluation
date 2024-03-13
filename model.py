@@ -154,8 +154,7 @@ def train_model(model, criterion, optimizer, scheduler, dataloaders, dataset_siz
                     best_val_acc = epoch_acc
                     best_epoch = epoch + 1  # Store the epoch number
                     torch.save(model.state_dict(), os.path.join(save_dir, 'best_model_params.pth'))
-
-            print()
+                    print()
 
         # Save checkpoint
         checkpoint = {
