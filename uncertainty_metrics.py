@@ -545,3 +545,49 @@ def plot_risk_coverage(risks_list, labels_list, x_smooth_percentage_interp, x_sm
     plt.tight_layout()
 
     plt.show()
+
+def calculate_mutual_information_mc_dropout(model, dataloader, class_names, device, num_samples=100):
+    model.eval()  # Set the model to evaluation mode
+    uncertainties = []
+    guesses_are_correct = []
+    sample_labels = []
+
+    with torch.no_grad():  # No need to compute gradients during evaluation
+        for batch_idx, (inputs, labels) in enumerate(dataloader):
+            inputs = inputs.to(device)
+            labels = labels.to(device)
+
+            sample_labels.extend(labels.cpu().numpy())
+
+            logits_list = []  # Initialize a list to store logits for each sample
+
+            # Generate predictions with dropout for multiple samples
+            for i in range(num_samples):
+                outputs = model(inputs)
+                logits_list.append(outputs)  # Store logits for each sample
+
+            # Concatenate logits along a new dimension to create a tensor
+            logits_tensor = torch.stack(logits_list, dim=0)
+
+            # Calculate softmax probabilities
+            probabilities = F.softmax(logits_tensor, dim=2)
+
+            # Compute uncertainty based on mutual information
+            uniform_distribution = torch.full_like(probabilities, 1.0 / probabilities.size(2))
+            mutual_information = F.kl_div(probabilities.log(), uniform_distribution, reduction='none').sum(dim=2)
+
+            # Average mutual information across samples
+            avg_mutual_information = mutual_information.mean(dim=0)
+
+            # Store mutual information
+            uncertainties.extend(-avg_mutual_information.cpu().numpy())
+
+            # Determine correctness of predictions
+            _, predicted = torch.max(logits_tensor.mean(dim=0), 1)
+            correct_guesses = (predicted == labels)
+            guesses_are_correct.extend(correct_guesses.cpu().numpy())
+
+            # Print date/time for monitoring
+            print(f"{dt.datetime.now()} - Batch {batch_idx + 1}/{len(dataloader)} processed")
+
+    return guesses_are_correct, uncertainties, sample_labels
