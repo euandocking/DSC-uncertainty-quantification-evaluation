@@ -77,78 +77,107 @@ def validate_model(model, criterion, data_loader, device, num_val_mc_samples=100
     epoch_acc = running_corrects.double() / len(data_loader.dataset)
     return epoch_loss, epoch_acc
 
-def train_model(model, criterion, optimizer, scheduler, dataloaders, dataset_sizes, device, train_losses, train_accuracies, val_losses, val_accuracies, best_epoch, num_epochs=50, num_val_mc_samples=100, loss_weight=0.5, acc_weight=0, num_classes=1):
+def train_model(model, criterion, optimizer, scheduler, dataloaders, dataset_sizes, device, train_losses, train_accuracies, val_losses, val_accuracies, best_epoch, num_epochs=50, num_val_mc_samples=100, loss_weight=1, acc_weight=0, num_classes=1, save_dir="saved_models", resume_training=False):
     since = time.time()
 
-    best_combined_metric = 0.0
-    best_model_weights = copy.deepcopy(model.state_dict())
-    best_val_loss = 0.0
+    best_combined_metric = -float('inf')  # Initialize to negative infinity
+    best_val_loss = float('inf')  # Initialize to positive infinity
     best_val_acc = 0.0
     
-    with TemporaryDirectory() as tempdir:
-        best_model_params_path = os.path.join(tempdir, 'best_model_params.pt')
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
 
-        for epoch in range(num_epochs):
-            current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            print(f'Epoch {epoch + 1}/{num_epochs} - {current_time}')
-            print('-' * 10)
+    if resume_training:
+        checkpoint = torch.load(os.path.join(save_dir, 'checkpoint.pth.tar'))
+        model.load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        best_combined_metric = checkpoint['best_combined_metric']
+        best_val_loss = checkpoint['best_val_loss']
+        best_val_acc = checkpoint['best_val_acc']
+        best_epoch = checkpoint['best_epoch']
+        train_losses = checkpoint['train_losses']
+        train_accuracies = checkpoint['train_accuracies']
+        val_losses = checkpoint['val_losses']
+        val_accuracies = checkpoint['val_accuracies']
 
-            for phase in ['train', 'val']:
-                model.train(phase == 'train')
-                data_loader = dataloaders[phase]
+    for epoch in range(num_epochs):
+        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        print(f'Epoch {epoch + 1}/{num_epochs} - {current_time}')
+        print('-' * 10)
 
+        for phase in ['train', 'val']:
+            model.train(phase == 'train')
+            data_loader = dataloaders[phase]
+
+            if phase == 'train':
+                running_loss = 0.0
+                running_corrects = 0
+                total_samples = 0
+                
+                for inputs, labels in data_loader:
+                    inputs, labels = inputs.to(device), labels.to(device)
+                    optimizer.zero_grad()
+                    outputs = model(inputs)
+                    loss = criterion(outputs, labels)
+                    
+                    # Apply class-wise normalization
+                    loss = loss / num_classes
+                    
+                    loss.backward()
+                    optimizer.step()
+
+                    running_loss += loss.item() * inputs.size(0)
+                    _, preds = torch.max(outputs, 1)
+                    running_corrects += torch.sum(preds == labels.data)
+                    total_samples += labels.size(0)
+
+                epoch_loss = running_loss / dataset_sizes[phase]
+                epoch_acc = running_corrects.double() / total_samples
+                print(f'{phase.capitalize()} Loss: {epoch_loss:.4f}, {phase.capitalize()} Acc: {epoch_acc:.4f}')
+                
                 if phase == 'train':
-                    running_loss = 0.0
-                    running_corrects = 0
-                    total_samples = 0
-                    
-                    for inputs, labels in data_loader:
-                        inputs, labels = inputs.to(device), labels.to(device)
-                        optimizer.zero_grad()
-                        outputs = model(inputs)
-                        loss = criterion(outputs, labels)
-                        
-                        # Apply class-wise normalization
-                        loss = loss / num_classes
-                        
-                        loss.backward()
-                        optimizer.step()
+                    train_losses.append(epoch_loss)
+                    train_accuracies.append(epoch_acc)
+                
+            else:
+                epoch_loss, epoch_acc = validate_model(model, criterion, data_loader, device, num_val_mc_samples, num_classes)
+                val_losses.append(epoch_loss)
+                val_accuracies.append(epoch_acc)
+                print(f'{phase.capitalize()} Loss: {epoch_loss:.4f}, {phase.capitalize()} Acc: {epoch_acc:.4f}')
+                
+                # Calculate combined metric
+                combined_metric = (acc_weight * epoch_acc) - (loss_weight * epoch_loss)
+                if combined_metric > best_combined_metric:
+                    best_combined_metric = combined_metric
+                    best_val_loss = epoch_loss
+                    best_val_acc = epoch_acc
+                    best_epoch = epoch + 1  # Store the epoch number
+                    torch.save(model.state_dict(), os.path.join(save_dir, 'best_model_params.pth'))
+                    print()
 
-                        running_loss += loss.item() * inputs.size(0)
-                        _, preds = torch.max(outputs, 1)
-                        running_corrects += torch.sum(preds == labels.data)
-                        total_samples += labels.size(0)
+        # Save checkpoint
+        checkpoint = {
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'scheduler_state_dict': scheduler.state_dict(),
+            'best_combined_metric': best_combined_metric,
+            'best_val_loss': best_val_loss,
+            'best_val_acc': best_val_acc,
+            'best_epoch': best_epoch,
+            'train_losses': train_losses,
+            'train_accuracies': train_accuracies,
+            'val_losses': val_losses,
+            'val_accuracies': val_accuracies
+        }
+        torch.save(checkpoint, os.path.join(save_dir, 'checkpoint.pth.tar'))
 
-                    epoch_loss = running_loss / dataset_sizes[phase]
-                    epoch_acc = running_corrects.double() / total_samples
-                    print(f'{phase.capitalize()} Loss: {epoch_loss:.4f}, {phase.capitalize()} Acc: {epoch_acc:.4f}')
-                    
-                    if phase == 'train':
-                        train_losses.append(epoch_loss)
-                        train_accuracies.append(epoch_acc)
-                    
-                else:
-                    epoch_loss, epoch_acc = validate_model(model, criterion, data_loader, device, num_val_mc_samples, num_classes)
-                    val_losses.append(epoch_loss)
-                    val_accuracies.append(epoch_acc)
-                    print(f'{phase.capitalize()} Loss: {epoch_loss:.4f}, {phase.capitalize()} Acc: {epoch_acc:.4f}')
-                    
-                    # Calculate combined metric
-                    combined_metric = acc_weight * epoch_acc - loss_weight * epoch_loss
-                    if combined_metric > best_combined_metric:
-                        best_combined_metric = combined_metric
-                        best_val_loss = epoch_loss
-                        best_val_acc = epoch_acc
-                        best_epoch = epoch + 1  # Store the epoch number
-                        torch.save(model.state_dict(), best_model_params_path)
-
-            print()
-
-        print(f'Best combined metric: {best_combined_metric:.4f}')
-        print(f'Loss associated with the best combined metric: {best_val_loss:.4f}')
-        print(f'Accuracy associated with the best combined metric: {best_val_acc:.4f}')
-        print(f'Epoch associated with the best model: {best_epoch}')
-        model.load_state_dict(torch.load(best_model_params_path))
+    print(f'Best combined metric: {best_combined_metric:.4f}')
+    print(f'Loss associated with the best combined metric: {best_val_loss:.4f}')
+    print(f'Accuracy associated with the best combined metric: {best_val_acc:.4f}')
+    print(f'Epoch associated with the best model: {best_epoch}')
+    print()
+    model.load_state_dict(torch.load(os.path.join(save_dir, 'best_model_params.pth')))
 
 def plot_metrics(train_losses, train_accuracies, val_losses, val_accuracies, best_epoch):
     # Move accuracies to CPU
