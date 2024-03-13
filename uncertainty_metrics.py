@@ -340,8 +340,8 @@ def calculate_variational_ratio_dropout_uncertainties(model, dataloader, class_n
                 # get the outputs with dropout
                 outputs = model(inputs, dropout=True)
                 predictions.append(F.softmax(outputs, dim=1).cpu().numpy())
-            
-            predictions = torch.tensor(predictions).to(device)
+
+            predictions = torch.tensor(np.array(predictions)).to(device)
 
             # Compute mean probabilities and uncertainties based on Variational Ratios
             mean_probabilities = torch.mean(predictions, dim=0)
@@ -591,3 +591,16 @@ def calculate_mutual_information_mc_dropout(model, dataloader, class_names, devi
             print(f"{dt.datetime.now()} - Batch {batch_idx + 1}/{len(dataloader)} processed")
 
     return guesses_are_correct, uncertainties, sample_labels
+
+# Function to select desired metrics for a given list of labels and risks
+def select_desired_metrics(labels_list, risks_list, desired_metrics):
+    selected_labels_list = []
+    selected_risks_list = []
+
+    for metric_name in labels_list:
+        if metric_name in desired_metrics:
+            selected_labels_list.append(metric_name)
+            index = labels_list.index(metric_name)
+            selected_risks_list.append(risks_list[index])
+
+    return selected_labels_list, selected_risks_list
