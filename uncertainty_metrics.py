@@ -66,6 +66,22 @@ def calculate_and_append_risks_by_class(risks_list_by_class, labels_list_by_clas
         risks_list_by_class[i].append(risks)
         labels_list_by_class[i].append(labels)
 
+def process_uncertainties(risks_list, labels_list, risks_list_by_class, labels_list_by_class, model, dataloader, class_names, device, uncertainty_function, uncertainty_name, *args, num_samples=None):
+    # Calculate uncertainties using the provided function
+    if num_samples is not None:
+        guesses_are_correct, uncertainties, sample_labels = uncertainty_function(model, dataloader, class_names, device, num_samples)
+    else:
+        guesses_are_correct, uncertainties, sample_labels = uncertainty_function(model, dataloader, class_names, device)
+    
+    # Process labels and uncertainties by class
+    guesses_are_correct_by_class, uncertainties_by_class = process_labels(sample_labels, guesses_are_correct, uncertainties, class_names)
+    
+    # Append risks and labels to the global lists
+    calculate_and_append_risks(risks_list, labels_list, guesses_are_correct, uncertainties, uncertainty_name)
+    calculate_and_append_risks_by_class(risks_list_by_class, labels_list_by_class, guesses_are_correct_by_class, uncertainties_by_class, class_names, uncertainty_name)
+    
+    print(uncertainty_name, "processed")
+
 def calculate_softmax_uncertainties(model, dataloader, class_names, device):
     model.eval()  # Set the model to evaluation mode
     guesses_are_correct = []
@@ -304,6 +320,49 @@ def calculate_variational_ratio_uncertainties(model, dataloader, class_names, de
 
     return guesses_are_correct, uncertainties, sample_labels
 
+def calculate_variational_ratio_dropout_uncertainties(model, dataloader, class_names, device, num_samples=100):
+    model.eval()  # Set the model to evaluation mode
+    guesses_are_correct = []
+    uncertainties = []
+    sample_labels = []
+
+    with torch.no_grad():
+        # for every batch in the dataloader
+        for batch_idx, (inputs, labels) in enumerate(dataloader):
+            # get the inputs and labels
+            inputs = inputs.to(device)
+            labels = labels.to(device)
+
+            sample_labels.extend(labels.cpu().numpy())
+
+            predictions = []
+            for _ in range(num_samples):
+                # get the outputs with dropout
+                outputs = model(inputs, dropout=True)
+                predictions.append(F.softmax(outputs, dim=1).cpu().numpy())
+            
+            predictions = torch.tensor(predictions).to(device)
+
+            # Compute mean probabilities and uncertainties based on Variational Ratios
+            mean_probabilities = torch.mean(predictions, dim=0)
+            mode_probabilities, _ = torch.max(mean_probabilities, dim=1, keepdim=True)
+            other_probabilities = mean_probabilities.clone()
+            other_probabilities.scatter_(1, torch.argmax(mean_probabilities, dim=1).view(-1, 1), 0)  # Set mode probabilities to 0
+            max_other_probabilities, _ = torch.max(other_probabilities, dim=1, keepdim=True)
+            variational_ratio = 1.0 - mode_probabilities / max_other_probabilities
+            uncertainties.extend(variational_ratio.cpu().numpy())
+
+            # get the class predictions
+            _, predicted = torch.max(mean_probabilities, 1)
+            # check and store whether predictions are correct
+            correct_guesses = (predicted == labels)
+            guesses_are_correct.extend(correct_guesses.cpu().numpy())
+            
+            # Print date/time for monitoring
+            print(f"{dt.datetime.now()} - Batch {batch_idx + 1}/{len(dataloader)} processed")
+
+    return guesses_are_correct, uncertainties, sample_labels
+
 def calculate_entropy_uncertainties(model, dataloader, class_names, device):
     model.eval()  # Set the model to evaluation mode
     guesses_are_correct = []
@@ -393,7 +452,7 @@ def calculate_mutual_information_uncertainties(model, dataloader, class_names, d
             sample_labels.extend(labels.cpu().numpy())
 
             # get the outputs
-            outputs = model(inputs, dropout=True)
+            outputs = model(inputs, dropout=False)
             # get the softmax outputs
             probabilities = F.softmax(outputs, dim=1)
             # get the class predictions
@@ -467,7 +526,7 @@ def plot_risk_coverage(risks_list, labels_list, x_smooth_percentage_interp, x_sm
 
     # x-axis label with a percentage
     plt.xlabel('Coverage')
-    plt.ylabel('Risk')
+    plt.ylabel('Risk (1 - Accuracy)')
     plt.title('Risk vs. Coverage')
 
     # Add a vertical line at approximately 20% coverage
@@ -479,7 +538,10 @@ def plot_risk_coverage(risks_list, labels_list, x_smooth_percentage_interp, x_sm
     # Adjust the y-axis limits
     plt.ylim(0, max_risk_100_coverage * 1.1)  # Set the upper limit slightly higher than the maximum risk at 100% coverage
 
-    # Show legend
-    plt.legend()
+    # Show legend outside of the graph to the right
+    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+
+    # Adjust figure size to accommodate legend outside of the plot
+    plt.tight_layout()
 
     plt.show()
