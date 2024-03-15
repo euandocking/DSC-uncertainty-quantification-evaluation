@@ -482,8 +482,8 @@ def smooth_calcs(risks):
     return x_smooth_percentage_interp, x_smooth_percentage
 
 def calculate_aurc(risks_list, labels_list, x_smooth_percentage_interp, x_smooth_percentage):
-    aucr_cutoff_list = []  # For 20% cutoff
-    aucr_full_list = []    # For the entire curve
+    aurc_cutoff_list = []  # For 20% cutoff
+    aurc_full_list = []    # For the entire curve
     
     for risks, label in zip(risks_list, labels_list):
         risks_smooth = np.interp(x_smooth_percentage_interp, x_smooth_percentage, risks)
@@ -493,26 +493,36 @@ def calculate_aurc(risks_list, labels_list, x_smooth_percentage_interp, x_smooth
 
         # Calculate area under the curve from 100% coverage to the 20% cutoff
         area_cutoff = np.trapz(risks_smooth[cutoff_index:], x=x_smooth_percentage_interp[cutoff_index:])
-        aucr_cutoff_list.append((label, area_cutoff))
+        aurc_cutoff_list.append((label, area_cutoff))
 
         # Calculate area under the entire curve
         area_full = np.trapz(risks_smooth, x=x_smooth_percentage_interp)
-        aucr_full_list.append((label, area_full))
+        aurc_full_list.append((label, area_full))
 
     # Sort the lists based on AURC values
-    aucr_cutoff_list.sort(key=lambda x: x[1])  # Sorting based on AURC for 20% cutoff
-    aucr_full_list.sort(key=lambda x: x[1])    # Sorting based on AURC for the entire curve
+    aurc_cutoff_list.sort(key=lambda x: x[1])  # Sorting based on AURC for 20% cutoff
+    aurc_full_list.sort(key=lambda x: x[1])    # Sorting based on AURC for the entire curve
+
+    # Modify risks_list and labels_list in place based on sorted AURC lists
+    for i, (label, _) in enumerate(aurc_full_list):
+        index = labels_list.index(label)
+        risks_list[i], risks_list[index] = risks_list[index], risks_list[i]
+        labels_list[i], labels_list[index] = labels_list[index], labels_list[i]
 
     # Print the AURC values side by side
-    max_label_length = max(len(item[0]) for item in aucr_cutoff_list + aucr_full_list)
+    max_label_length = max(len(item[0]) for item in aurc_cutoff_list + aurc_full_list)
+
+    print("\nAURC (full):")
+    print("Label" + " " * (max_label_length - 5) + "\tAURC")
+    print("-" * (max_label_length + 15))
+    for label, aurc_full in aurc_full_list:
+        print(f"{label}" + " " * (max_label_length - len(label) + 5) + f"\t{aurc_full:.4f}")
     
-    print("Label" + " " * (max_label_length - 5) + "\tAURC (20% cutoff)" + "\t" + "AURC (full)")
-    print("-" * (max_label_length + 35))
-    
-    for cutoff_item, full_item in zip(aucr_cutoff_list, aucr_full_list):
-        label_cutoff, aucr_cutoff = cutoff_item
-        label_full, aucr_full = full_item
-        print(f"{label_cutoff}" + " " * (max_label_length - len(label_cutoff) + 5) + f"\t{aucr_cutoff:.4f}\t\t\t{aucr_full:.4f}")
+    print("\nAURC (20% cutoff):")
+    print("Label" + " " * (max_label_length - 5) + "\tAURC")
+    print("-" * (max_label_length + 15))
+    for label, aurc_cutoff in aurc_cutoff_list:
+        print(f"{label}" + " " * (max_label_length - len(label) + 5) + f"\t{aurc_cutoff:.4f}")
 
 def plot_risk_coverage(risks_list, labels_list, x_smooth_percentage_interp, x_smooth_percentage):
     max_risk_100_coverage = 0  # Initialize max risk value at 100% coverage
