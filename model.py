@@ -53,6 +53,40 @@ class CustomEfficientNetB0(nn.Module):
         x = self.fc2(x)
         return x
 
+# Define the custom loss function
+class CustomLoss(nn.Module):
+    def __init__(self, class_weights_matrix):
+        super(CustomLoss, self).__init__()
+        self.class_weights_matrix = class_weights_matrix
+
+    def forward(self, outputs, targets):
+        # Compute the cross-entropy loss
+        loss = nn.CrossEntropyLoss(reduction='none')(outputs, targets)
+
+        # Extract the class weights for each combination of actual and predicted labels
+        weights = self.class_weights_matrix[targets, torch.argmax(outputs, dim=1)]
+
+        # Multiply the cross-entropy loss by the corresponding class weights
+        weighted_loss = loss * weights
+
+        # Calculate the mean loss
+        mean_loss = torch.mean(weighted_loss)
+
+        return mean_loss
+
+def compute_class_weights(targets, num_classes):
+    class_counts = torch.bincount(targets, minlength=num_classes)
+    total_samples = class_counts.sum().item()
+    class_weights = (total_samples / (num_classes * class_counts.float())).tolist()
+    return class_weights
+
+def normalize_matrix(matrix):
+    return matrix / matrix.sum(dim=1, keepdim=True)
+
+def print_matrix(label, matrix):
+    print(label + ":")
+    print(matrix)
+
 def validate_model(model, criterion, data_loader, device, num_val_mc_samples=100, num_classes=1):
     model.eval()
     running_loss = 0.0
@@ -62,12 +96,11 @@ def validate_model(model, criterion, data_loader, device, num_val_mc_samples=100
     with torch.no_grad():
         for inputs, labels in data_loader:
             inputs, labels = inputs.to(device), labels.to(device)
-            outputs_list = [model(inputs).unsqueeze(0).to(device) for _ in range(num_val_mc_samples)]  # Move outputs to device
+            outputs_list = [model(inputs).unsqueeze(0) for _ in range(num_val_mc_samples)]
             outputs_mean = torch.cat(outputs_list, dim=0).mean(dim=0)
             
             # Normalize the loss by the number of classes
             loss = criterion(outputs_mean, labels) / num_classes
-            loss = loss.to(device)  # Move loss to device
             
             running_loss += loss.item() * inputs.size(0)
             _, preds = torch.max(outputs_mean, 1)
@@ -77,7 +110,6 @@ def validate_model(model, criterion, data_loader, device, num_val_mc_samples=100
     epoch_loss = running_loss / len(data_loader.dataset)
     epoch_acc = running_corrects.double() / len(data_loader.dataset)
     return epoch_loss, epoch_acc
-
 
 def train_model(model, criterion, optimizer, scheduler, dataloaders, dataset_sizes, device, train_losses, train_accuracies, val_losses, val_accuracies, best_epoch, num_epochs=50, num_val_mc_samples=100, loss_weight=1, acc_weight=0, num_classes=1, save_dir="saved_models", resume_training=False):
     since = time.time()
@@ -121,10 +153,12 @@ def train_model(model, criterion, optimizer, scheduler, dataloaders, dataset_siz
                     inputs, labels = inputs.to(device), labels.to(device)
                     optimizer.zero_grad()
                     outputs = model(inputs)
+                    outputs = outputs.to(device)  # Move outputs to device
                     loss = criterion(outputs, labels)
                     
                     # Apply class-wise normalization
                     loss = loss / num_classes
+                    loss = loss.to(device)  # Move loss to device
                     
                     loss.backward()
                     optimizer.step()
