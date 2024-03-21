@@ -62,11 +62,12 @@ def validate_model(model, criterion, data_loader, device, num_val_mc_samples=100
     with torch.no_grad():
         for inputs, labels in data_loader:
             inputs, labels = inputs.to(device), labels.to(device)
-            outputs_list = [model(inputs).unsqueeze(0) for _ in range(num_val_mc_samples)]
+            outputs_list = [model(inputs).unsqueeze(0).to(device) for _ in range(num_val_mc_samples)]  # Move outputs to device
             outputs_mean = torch.cat(outputs_list, dim=0).mean(dim=0)
             
             # Normalize the loss by the number of classes
             loss = criterion(outputs_mean, labels) / num_classes
+            loss = loss.to(device)  # Move loss to device
             
             running_loss += loss.item() * inputs.size(0)
             _, preds = torch.max(outputs_mean, 1)
@@ -76,6 +77,7 @@ def validate_model(model, criterion, data_loader, device, num_val_mc_samples=100
     epoch_loss = running_loss / len(data_loader.dataset)
     epoch_acc = running_corrects.double() / len(data_loader.dataset)
     return epoch_loss, epoch_acc
+
 
 def train_model(model, criterion, optimizer, scheduler, dataloaders, dataset_sizes, device, train_losses, train_accuracies, val_losses, val_accuracies, best_epoch, num_epochs=50, num_val_mc_samples=100, loss_weight=1, acc_weight=0, num_classes=1, save_dir="saved_models", resume_training=False):
     since = time.time()
@@ -145,6 +147,7 @@ def train_model(model, criterion, optimizer, scheduler, dataloaders, dataset_siz
                 val_losses.append(epoch_loss)
                 val_accuracies.append(epoch_acc)
                 print(f'{phase.capitalize()} Loss: {epoch_loss:.4f}, {phase.capitalize()} Acc: {epoch_acc:.4f}')
+                print()
                 
                 # Calculate combined metric
                 combined_metric = (acc_weight * epoch_acc) - (loss_weight * epoch_loss)
@@ -154,8 +157,7 @@ def train_model(model, criterion, optimizer, scheduler, dataloaders, dataset_siz
                     best_val_acc = epoch_acc
                     best_epoch = epoch + 1  # Store the epoch number
                     torch.save(model.state_dict(), os.path.join(save_dir, 'best_model_params.pth'))
-                    print()
-
+                    
         # Save checkpoint
         checkpoint = {
             'model_state_dict': model.state_dict(),
