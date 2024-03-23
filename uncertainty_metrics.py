@@ -588,7 +588,7 @@ def plot_risk_coverage(risks_list, labels_list, x_smooth_percentage_interp, x_sm
 
     # x-axis label with a percentage
     plt.xlabel('Coverage')
-    plt.ylabel('Risk (1 - Accuracy)')
+    plt.ylabel('1 - Accuracy')
     plt.title('Risk vs. Coverage')
 
     # Add a vertical line at approximately 20% coverage
