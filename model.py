@@ -55,9 +55,9 @@ class CustomEfficientNetB0(nn.Module):
 
 # Define the custom loss function
 class CustomLoss(nn.Module):
-    def __init__(self, class_weights_matrix):
+    def __init__(self, class_weights_matrix, device):
         super(CustomLoss, self).__init__()
-        self.class_weights_matrix = class_weights_matrix
+        self.class_weights_matrix = class_weights_matrix.to(device)
 
     def forward(self, outputs, targets):
         # Compute the cross-entropy loss
