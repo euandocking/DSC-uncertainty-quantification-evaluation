@@ -23,24 +23,46 @@ from efficientnet_pytorch import EfficientNet
 from torchvision.models import efficientnet_b0, EfficientNet_B0_Weights
 from torchvision.models._api import WeightsEnum
 from torch.hub import load_state_dict_from_url
+import csv
 
-# get a list of risks associated with the removal of the least certain samples
-def calculate_risks(guesses_are_correct, uncertainties):
-    # create a blank list
+def export_to_csv(data, filename):
+    with open(filename, 'w', newline='') as csvfile:
+        csv_writer = csv.writer(csvfile)
+        csv_writer.writerow(['Label', 'AURC'])  # Write header
+        csv_writer.writerows(data)
+
+def calculate_risks(guesses_are_correct, uncertainties, targets):
+    # Error handling
+    if len(guesses_are_correct) != len(uncertainties) or len(uncertainties) != len(targets):
+        raise ValueError("Lengths of guesses_are_correct, uncertainties, and targets must be equal.")
+    
     risks = []
-
-    # while uncertainties isn't empty
+    class_names = np.unique(targets)
+    
     while uncertainties:
-        # get risk based on average correctness/accuracy
-        risk = 1 - (sum(guesses_are_correct) / len(guesses_are_correct))
-        # append to list
-        risks.append(risk)
-
-        # remove results for the least certain sample
-        max_uncertainty_index = uncertainties.index(max(uncertainties))
+        # Accumulate correct guesses for each class
+        guesses_are_correct_by_class = [[] for _ in range(len(class_names))]
+        for target_index, target in enumerate(targets):
+            class_index = np.where(class_names == target)[0][0]
+            guesses_are_correct_by_class[class_index].append(guesses_are_correct[target_index])
+        
+        # Calculate class accuracies
+        class_accuracies = []
+        for class_correct in guesses_are_correct_by_class:
+            if len(class_correct) > 0:  # Only calculate accuracy if there are samples for the class
+                class_accuracies.append(np.mean(class_correct))
+        
+        mean_risk = 1 - np.mean(class_accuracies)
+        
+        # Append to risks list
+        risks.append(mean_risk)
+        
+        # Remove results for the least certain sample
+        max_uncertainty_index = np.argmax(uncertainties)
         uncertainties.pop(max_uncertainty_index)
         guesses_are_correct.pop(max_uncertainty_index)
-
+        targets.pop(max_uncertainty_index)
+    
     risks.reverse()
 
     return risks
@@ -55,8 +77,8 @@ def process_labels(sample_labels, guesses_are_correct, uncertainties, class_name
 
     return guesses_are_correct_by_class, uncertainties_by_class
 
-def calculate_and_append_risks(risks_list, labels_list, guesses_are_correct, uncertainties, labels):
-    risks = calculate_risks(guesses_are_correct, uncertainties)
+def calculate_and_append_risks(risks_list, labels_list, guesses_are_correct, uncertainties, labels, targets):
+    risks = calculate_risks(guesses_are_correct, uncertainties, targets)
     risks_list.append(risks)
     labels_list.append(labels)
 
@@ -77,7 +99,7 @@ def process_uncertainties(risks_list, labels_list, risks_list_by_class, labels_l
     guesses_are_correct_by_class, uncertainties_by_class = process_labels(sample_labels, guesses_are_correct, uncertainties, class_names)
     
     # Append risks and labels to the global lists
-    calculate_and_append_risks(risks_list, labels_list, guesses_are_correct, uncertainties, uncertainty_name)
+    calculate_and_append_risks(risks_list, labels_list, guesses_are_correct, uncertainties, uncertainty_name, sample_labels)
     calculate_and_append_risks_by_class(risks_list_by_class, labels_list_by_class, guesses_are_correct_by_class, uncertainties_by_class, class_names, uncertainty_name)
     
     print(uncertainty_name, "processed")
@@ -554,7 +576,7 @@ def calculate_aurc(risks_list, labels_list, x_smooth_percentage_interp, x_smooth
     # Sort the lists based on AURC values
     aurc_cutoff_list.sort(key=lambda x: x[1])  # Sorting based on AURC for 20% cutoff
     aurc_full_list.sort(key=lambda x: x[1])    # Sorting based on AURC for the entire curve
-
+    
     # Modify risks_list and labels_list in place based on sorted AURC lists
     for i, (label, _) in enumerate(aurc_full_list):
         index = labels_list.index(label)
@@ -576,8 +598,12 @@ def calculate_aurc(risks_list, labels_list, x_smooth_percentage_interp, x_smooth
     for label, aurc_cutoff in aurc_cutoff_list:
         print(f"{label}" + " " * (max_label_length - len(label) + 5) + f"\t{aurc_cutoff:.4f}")
 
-def plot_risk_coverage(risks_list, labels_list, x_smooth_percentage_interp, x_smooth_percentage):
+    return aurc_full_list, aurc_cutoff_list
+
+def plot_risk_coverage(risks_list, labels_list, x_smooth_percentage_interp, x_smooth_percentage, save_dir):
     max_risk_100_coverage = 0  # Initialize max risk value at 100% coverage
+    
+    plt.figure(figsize=(10, 6))  # Adjust the figure size as needed (width, height)
 
     for risks, label in zip(risks_list, labels_list):
         risks_smooth = np.interp(x_smooth_percentage_interp, x_smooth_percentage, risks)
@@ -588,8 +614,8 @@ def plot_risk_coverage(risks_list, labels_list, x_smooth_percentage_interp, x_sm
 
     # x-axis label with a percentage
     plt.xlabel('Coverage')
-    plt.ylabel('1 - Accuracy')
-    plt.title('Risk vs. Coverage')
+    plt.ylabel('1 - Mean Class Accuracy')
+    plt.title(f"Risk vs. Coverage {save_dir}")
 
     # Add a vertical line at approximately 20% coverage
     plt.axvline(x=0.2, color='red', linestyle='--', label='20% Coverage')
@@ -606,6 +632,8 @@ def plot_risk_coverage(risks_list, labels_list, x_smooth_percentage_interp, x_sm
     # Adjust figure size to accommodate legend outside of the plot
     plt.tight_layout()
 
+    plt.savefig(os.path.join(save_dir, 'risk_coverage.png'))
+    
     plt.show()
 
 # Function to select desired metrics for a given list of labels and risks
