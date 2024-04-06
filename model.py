@@ -100,7 +100,7 @@ def validate_model(model, criterion, data_loader, device, num_val_mc_samples=100
             outputs_mean = torch.cat(outputs_list, dim=0).mean(dim=0)
             
             # Normalize the loss by the number of classes
-            loss = criterion(outputs_mean, labels) / num_classes
+            loss = criterion(outputs_mean, labels)
             
             running_loss += loss.item() * inputs.size(0)
             _, preds = torch.max(outputs_mean, 1)
@@ -113,7 +113,7 @@ def validate_model(model, criterion, data_loader, device, num_val_mc_samples=100
 
 def train_model(model, criterion, optimizer, scheduler, dataloaders, dataset_sizes, device,
                 num_epochs=50, num_val_mc_samples=100, loss_weight=1, acc_weight=0, num_classes=1,
-                save_dir="saved_models", resume_training=False):
+                save_dir="saved_models", restart_training=False):
     
     best_epoch = 0
     best_combined_metric = -float('inf')
@@ -121,29 +121,32 @@ def train_model(model, criterion, optimizer, scheduler, dataloaders, dataset_siz
     best_val_acc = 0.0
     start_epoch = 0
 
-    if not os.path.exists(save_dir):
-        os.makedirs(save_dir)
-
-    if resume_training:
-        checkpoint = torch.load(os.path.join(save_dir, 'checkpoint.pth.tar'))
-        model.load_state_dict(checkpoint['model_state_dict'])
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-        best_combined_metric = checkpoint['best_combined_metric']
-        best_val_loss = checkpoint['best_val_loss']
-        best_val_acc = checkpoint['best_val_acc']
-        best_epoch = checkpoint['best_epoch']
-        start_epoch = checkpoint['epoch']
-        train_losses = checkpoint['train_losses']
-        train_accuracies = checkpoint['train_accuracies']
-        val_losses = checkpoint['val_losses']
-        val_accuracies = checkpoint['val_accuracies']
+    # Check if save_dir exists and is a directory
+    if os.path.exists(save_dir) and os.path.isdir(save_dir):
+        # Restart training if requested, or if no checkpoint exists
+        if restart_training or not os.path.exists(os.path.join(save_dir, 'checkpoint.pth.tar')):
+            train_losses, train_accuracies, val_losses, val_accuracies = [], [], [], []
+        else:
+            checkpoint = torch.load(os.path.join(save_dir, 'checkpoint.pth.tar'))
+            model.load_state_dict(checkpoint['model_state_dict'])
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+            best_combined_metric = checkpoint['best_combined_metric']
+            best_val_loss = checkpoint['best_val_loss']
+            best_val_acc = checkpoint['best_val_acc']
+            best_epoch = checkpoint['best_epoch']
+            start_epoch = checkpoint['epoch']
+            train_losses = checkpoint['train_losses']
+            train_accuracies = checkpoint['train_accuracies']
+            val_losses = checkpoint['val_losses']
+            val_accuracies = checkpoint['val_accuracies']
     else:
+        os.makedirs(save_dir)
         train_losses, train_accuracies, val_losses, val_accuracies = [], [], [], []
 
     for epoch in range(start_epoch, num_epochs):
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        print(f'Epoch {epoch + 1}/{num_epochs} - {current_time}')
+        print(f'Epoch {epoch + 1} - {current_time}')
         print('-' * 10)
 
         for phase in ['train', 'val']:
@@ -160,9 +163,7 @@ def train_model(model, criterion, optimizer, scheduler, dataloaders, dataset_siz
                     optimizer.zero_grad()
                     outputs = model(inputs)
                     outputs = outputs.to(device) 
-                    loss = criterion(outputs, labels)
-                    loss = loss / num_classes
-                    loss = loss.to(device) 
+                    loss = criterion(outputs, labels).to(device) 
                     loss.backward()
                     optimizer.step()
 
