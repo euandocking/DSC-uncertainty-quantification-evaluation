@@ -31,84 +31,77 @@ def export_to_csv(data, filename):
         csv_writer.writerow(['Label', 'AURC'])  # Write header
         csv_writer.writerows(data)
 
-def calculate_risks(guesses_are_correct, uncertainties, targets):
+def calculate_risks(predictions, uncertainties, targets, cost_matrix):
     # Error handling
-    if len(guesses_are_correct) != len(uncertainties) or len(uncertainties) != len(targets):
+    if len(predictions) != len(uncertainties) or len(uncertainties) != len(targets):
         raise ValueError("Lengths of guesses_are_correct, uncertainties, and targets must be equal.")
     
     risks = []
-    class_names = np.unique(targets)
-    
+
     while uncertainties:
-        # Accumulate correct guesses for each class
-        guesses_are_correct_by_class = [[] for _ in range(len(class_names))]
-        for target_index, target in enumerate(targets):
-            class_index = np.where(class_names == target)[0][0]
-            guesses_are_correct_by_class[class_index].append(guesses_are_correct[target_index])
+        risk = 0
+        for prediction, target in zip(predictions, targets):
+            risk += cost_matrix[target][prediction]
         
-        # Calculate class accuracies
-        class_accuracies = []
-        for class_correct in guesses_are_correct_by_class:
-            if len(class_correct) > 0:  # Only calculate accuracy if there are samples for the class
-                class_accuracies.append(np.mean(class_correct))
-        
-        mean_risk = 1 - np.mean(class_accuracies)
-        
-        # Append to risks list
-        risks.append(mean_risk)
+        max_possible_risk = np.max(cost_matrix) * len(predictions)
+        normalized_risk = risk / max_possible_risk
+
+        risks.append(normalized_risk)
         
         # Remove results for the least certain sample
         max_uncertainty_index = np.argmax(uncertainties)
         uncertainties.pop(max_uncertainty_index)
-        guesses_are_correct.pop(max_uncertainty_index)
+        predictions.pop(max_uncertainty_index)
         targets.pop(max_uncertainty_index)
     
     risks.reverse()
 
     return risks
 
-def process_labels(sample_labels, guesses_are_correct, uncertainties, class_names):
-    guesses_are_correct_by_class = [[] for _ in range(len(class_names))]
+def process_labels(uncertainties, predictions, targets, class_names):
+    predictions_by_class = [[] for _ in range(len(class_names))]
     uncertainties_by_class = [[] for _ in range(len(class_names))]
+    targets_by_class = [[] for _ in range(len(class_names))]
+    
+    for prediction, uncertainty, target in zip(predictions, uncertainties, targets):
+        predictions_by_class[target].append(prediction)
+        uncertainties_by_class[target].append(uncertainty)
+        targets_by_class[target].append(target)
+    
+    return predictions_by_class, uncertainties_by_class, targets_by_class
 
-    for label, correct_guess, uncertainty in zip(sample_labels, guesses_are_correct, uncertainties):
-        guesses_are_correct_by_class[label].append(correct_guess)
-        uncertainties_by_class[label].append(uncertainty)
-
-    return guesses_are_correct_by_class, uncertainties_by_class
-
-def calculate_and_append_risks(risks_list, labels_list, guesses_are_correct, uncertainties, labels, targets):
-    risks = calculate_risks(guesses_are_correct, uncertainties, targets)
+def calculate_and_append_risks(risks_list, labels_list, label, cost_matrix, predictions, uncertainties, targets):
+    risks = calculate_risks(predictions, uncertainties, targets, cost_matrix)
     risks_list.append(risks)
-    labels_list.append(labels)
+    labels_list.append(label)
 
-def calculate_and_append_risks_by_class(risks_list_by_class, labels_list_by_class, guesses_are_correct_by_class, uncertainties_by_class, class_names, labels):
+def calculate_and_append_risks_by_class(risks_list_by_class, labels_list_by_class, label, cost_matrix, predictions_by_class, uncertainties_by_class, targets_by_class, class_names):
     for i in range(len(class_names)):
-        risks = calculate_risks(guesses_are_correct_by_class[i], uncertainties_by_class[i])
+        risks = calculate_risks(predictions_by_class[i], uncertainties_by_class[i], targets_by_class[i], cost_matrix)
         risks_list_by_class[i].append(risks)
-        labels_list_by_class[i].append(labels)
+        labels_list_by_class[i].append(label)
 
-def process_uncertainties(risks_list, labels_list, risks_list_by_class, labels_list_by_class, model, dataloader, class_names, device, uncertainty_function, uncertainty_name, *args, num_samples=None):
+def process_uncertainties(risks_list, labels_list, risks_list_by_class, labels_list_by_class, model, dataloader, class_names, device, uncertainty_function, uncertainty_name, cost_matrix, *args, num_samples=None):
     # Calculate uncertainties using the provided function
     if num_samples is not None:
-        guesses_are_correct, uncertainties, sample_labels = uncertainty_function(model, dataloader, class_names, device, num_samples)
+        predictions, uncertainties, targets = uncertainty_function(model, dataloader, class_names, device, num_samples)
     else:
-        guesses_are_correct, uncertainties, sample_labels = uncertainty_function(model, dataloader, class_names, device)
+        predictions, uncertainties, targets = uncertainty_function(model, dataloader, class_names, device)
     
     # Process labels and uncertainties by class
-    guesses_are_correct_by_class, uncertainties_by_class = process_labels(sample_labels, guesses_are_correct, uncertainties, class_names)
+    predictions_by_class, uncertainties_by_class, targets_by_class = process_labels(uncertainties, predictions, targets, class_names)
     
     # Append risks and labels to the global lists
-    calculate_and_append_risks(risks_list, labels_list, guesses_are_correct, uncertainties, uncertainty_name, sample_labels)
-    calculate_and_append_risks_by_class(risks_list_by_class, labels_list_by_class, guesses_are_correct_by_class, uncertainties_by_class, class_names, uncertainty_name)
+    calculate_and_append_risks(risks_list, labels_list, uncertainty_name, cost_matrix, predictions, uncertainties, targets)
+    calculate_and_append_risks_by_class(risks_list_by_class, labels_list_by_class, uncertainty_name, cost_matrix, predictions_by_class, uncertainties_by_class, targets_by_class, class_names)
     
     print(uncertainty_name, "processed")
 
 def calculate_softmax_uncertainties(model, dataloader, class_names, device):
     model.eval()  # Set the model to evaluation mode
-    guesses_are_correct = []
+    predictions = []
     uncertainties = []
-    sample_labels = []
+    targets = []
 
     with torch.no_grad():
         # for every batch in the dataloader
@@ -117,32 +110,29 @@ def calculate_softmax_uncertainties(model, dataloader, class_names, device):
             inputs = inputs.to(device)
             labels = labels.to(device)
 
-            sample_labels.extend(labels.cpu().numpy())
+            targets.extend(labels.cpu().numpy())
 
             # get the outputs
             outputs = model(inputs, dropout=False).to(device)  # Move outputs to device
             # get the softmax outputs
             probabilities = F.softmax(outputs, dim=1).to(device)  # Move probabilities to device
             # get the class predictions
-            _, predicted = torch.max(outputs, 1)
-            # check and store whether predictions are correct
-            correct_guesses = (predicted == labels)
-            guesses_are_correct.extend(correct_guesses.cpu().numpy())
+            _, batch_predictions = torch.max(outputs, 1)
+            predictions.extend(batch_predictions.cpu().numpy())
 
             # Compute uncertainty based on softmax probabilities
-            for idx in range(len(predicted)):
-                predicted_class = predicted[idx].item()
+            for idx in range(len(batch_predictions)):
+                predicted_class = batch_predictions[idx].item()
                 uncertainty = 1.0 - probabilities[idx, predicted_class].item()  # Using confidence as uncertainty
                 uncertainties.append(uncertainty)
 
-    return guesses_are_correct, uncertainties, sample_labels
-
+    return predictions, uncertainties, targets
 
 def calculate_top2_softmax_uncertainties(model, dataloader, class_names, device):
     model.eval()  # Set the model to evaluation mode
-    guesses_are_correct = []
+    predictions = []
     uncertainties = []
-    sample_labels = []
+    targets = []
 
     with torch.no_grad():
         # For every batch in the dataloader
@@ -151,7 +141,7 @@ def calculate_top2_softmax_uncertainties(model, dataloader, class_names, device)
             inputs = inputs.to(device)
             labels = labels.to(device)
 
-            sample_labels.extend(labels.cpu().numpy())
+            targets.extend(labels.cpu().numpy())
 
             # Get the outputs
             outputs = model(inputs, dropout=False).to(device)  # Move outputs to device
@@ -164,62 +154,59 @@ def calculate_top2_softmax_uncertainties(model, dataloader, class_names, device)
             top2_diff = top2_probs[:, 0] - top2_probs[:, 1]
 
             # Get the class predictions
-            _, predicted = torch.max(outputs, 1)
-            # Check and store whether predictions are correct
-            correct_guesses = (predicted == labels)
-            guesses_are_correct.extend(correct_guesses.cpu().numpy())
+            _, batch_predictions = torch.max(outputs, 1)
+            predictions.extend(batch_predictions.cpu().numpy())
 
             # Store the uncertainty as the difference between the top two softmax values
             uncertainties.extend(-top2_diff.cpu().numpy())
 
-    return guesses_are_correct, uncertainties, sample_labels
+    return predictions, uncertainties, targets
 
 
 def calculate_random_uncertainties(model, dataloader, class_names, device):
     model.eval()  # Set the model to evaluation mode
-    guesses_are_correct = []
+    predictions = []
     uncertainties = []
-    sample_labels = []
+    targets = []
 
     with torch.no_grad():
         for inputs, labels in dataloader:
             inputs = inputs.to(device)
             labels = labels.to(device)
 
-            sample_labels.extend(labels.cpu().numpy())
+            targets.extend(labels.cpu().numpy())
 
             outputs = model(inputs, dropout=False).to(device)
-            _, predicted = torch.max(outputs, 1)
-            correct_guesses = (predicted == labels)
-            guesses_are_correct.extend(correct_guesses.cpu().numpy())
+            _, batch_predictions = torch.max(outputs, 1)
+            predictions.extend(batch_predictions.cpu().numpy())
 
             # Generate a single random uncertainty value for each predicted class
-            for idx in range(len(predicted)):
+            for idx in range(len(batch_predictions)):
                 uncertainty = random.random()
                 uncertainties.append(uncertainty)
 
-    return guesses_are_correct, uncertainties, sample_labels
+    return predictions, uncertainties, targets
 
 def calculate_mc_dropout_uncertainties_by_sample(model, dataloader, class_names, device, num_samples=100):
     model.eval()  # Set the model to evaluation mode
-    guesses_are_correct = []
+    final_predictions = []
     uncertainties = []
-    sample_labels = []
+    targets = []
 
     with torch.no_grad():  # No need to compute gradients during evaluation
         for batch_idx, (inputs, labels) in enumerate(dataloader):
             inputs = inputs.to(device)
             labels = labels.to(device)
 
-            sample_labels.extend(labels.cpu().numpy())
+            targets.extend(labels.cpu().numpy())
 
             mean_predictions = torch.zeros(num_samples, inputs.size(0), len(class_names)).to(device)
 
             # Generate predictions with dropout for multiple samples
             for i in range(num_samples):
                 outputs = model(inputs)
-                predictions = F.softmax(outputs, dim=1).to(device)  # Move softmax operation to device
-                mean_predictions[i] = predictions
+                sample_predictions = F.softmax(outputs, dim=1).to(device)  # Move softmax operation to device
+                mean_predictions[i] = sample_predictions
 
             # Calculate mean prediction across samples
             mean_prediction = torch.mean(mean_predictions, dim=0)
@@ -228,27 +215,26 @@ def calculate_mc_dropout_uncertainties_by_sample(model, dataloader, class_names,
             uncertainties.extend(1.0 - torch.max(mean_prediction, dim=1)[0].cpu().numpy())
 
             # Determine correctness of predictions
-            _, predicted = torch.max(mean_prediction, 1)
-            correct_guesses = (predicted == labels)
-            guesses_are_correct.extend(correct_guesses.cpu().numpy())
+            _, batch_predictions = torch.max(mean_prediction, 1)
+            final_predictions.extend(batch_predictions.cpu().numpy())
 
             # Print date/time for monitoring
             print(f"{dt.datetime.now()} - Batch {batch_idx + 1}/{len(dataloader)} processed")
 
-    return guesses_are_correct, uncertainties, sample_labels
+    return final_predictions, uncertainties, targets
 
 def calculate_mc_dropout_uncertainties_by_class(model, dataloader, class_names, device, num_samples=100):
     model.eval()  # Set the model to evaluation mode
-    guesses_are_correct = []
+    final_predictions = []
     uncertainties = []
-    sample_labels = []
+    targets = []
 
     with torch.no_grad():  # No need to compute gradients during evaluation
         for batch_idx, (inputs, labels) in enumerate(dataloader):
             inputs = inputs.to(device)
             labels = labels.to(device)
 
-            sample_labels.extend(labels.cpu().numpy())
+            targets.extend(labels.cpu().numpy())
 
             logits_list = []  # Initialize a list to store logits for each sample
 
@@ -267,20 +253,19 @@ def calculate_mc_dropout_uncertainties_by_class(model, dataloader, class_names, 
             uncertainties.extend(1.0 - torch.max(class_avg_outputs, dim=1)[0].cpu().numpy())
 
             # Determine correctness of predictions
-            _, predicted = torch.max(class_avg_outputs, 1)
-            correct_guesses = (predicted == labels)
-            guesses_are_correct.extend(correct_guesses.cpu().numpy())
+            _, batch_predictions = torch.max(class_avg_outputs, 1)
+            final_predictions.extend(batch_predictions.cpu().numpy())
 
             # Print date/time for monitoring
             print(f"{dt.datetime.now()} - Batch {batch_idx + 1}/{len(dataloader)} processed")
 
-    return guesses_are_correct, uncertainties, sample_labels
+    return final_predictions, uncertainties, targets
 
 def calculate_variance_uncertainties(model, dataloader, class_names, device):
     model.eval()  # Set the model to evaluation mode
-    guesses_are_correct = []
+    predictions = []
     uncertainties = []
-    sample_labels = []
+    targets = []
 
     with torch.no_grad():
         # For every batch in the dataloader
@@ -289,29 +274,27 @@ def calculate_variance_uncertainties(model, dataloader, class_names, device):
             inputs = inputs.to(device)
             labels = labels.to(device)
 
-            sample_labels.extend(labels.cpu().numpy())
+            targets.extend(labels.cpu().numpy())
 
             # Get the outputs
             outputs = model(inputs, dropout=False).to(device)  # Move outputs to device
             # Get the softmax outputs
             probabilities = F.softmax(outputs, dim=1).to(device)  # Move probabilities to device
             # Get the class predictions
-            _, predicted = torch.max(outputs, 1)
-            # Check and store whether predictions are correct
-            correct_guesses = (predicted == labels)
-            guesses_are_correct.extend(correct_guesses.cpu().numpy())
+            _, batch_predictions = torch.max(outputs, 1)
+            predictions.extend(batch_predictions.cpu().numpy())
 
             # Compute uncertainty based on variance over classes
             variance = torch.var(probabilities, dim=1)
             uncertainties.extend(-variance.cpu().numpy())
 
-    return guesses_are_correct, uncertainties, sample_labels
+    return predictions, uncertainties, targets
 
 def calculate_variational_ratio_uncertainties(model, dataloader, class_names, device):
     model.eval()  # Set the model to evaluation mode
-    guesses_are_correct = []
+    predictions = []
     uncertainties = []
-    sample_labels = []
+    targets = []
 
     with torch.no_grad():
         # For every batch in the dataloader
@@ -320,33 +303,31 @@ def calculate_variational_ratio_uncertainties(model, dataloader, class_names, de
             inputs = inputs.to(device)
             labels = labels.to(device)
 
-            sample_labels.extend(labels.cpu().numpy())
+            targets.extend(labels.cpu().numpy())
 
             # Get the outputs
             outputs = model(inputs, dropout=False).to(device)  # Move outputs to device
             # Get the softmax outputs
             probabilities = F.softmax(outputs, dim=1).to(device)  # Move probabilities to device
             # Get the class predictions
-            _, predicted = torch.max(outputs, 1)
-            # Check and store whether predictions are correct
-            correct_guesses = (predicted == labels)
-            guesses_are_correct.extend(correct_guesses.cpu().numpy())
+            _, batch_predictions = torch.max(outputs, 1)
+            predictions.extend(batch_predictions.cpu().numpy())
 
             # Compute uncertainty based on Variational Ratios
             mode_probabilities, _ = torch.max(probabilities, dim=1, keepdim=True)
             other_probabilities = probabilities.clone()
-            other_probabilities.scatter_(1, predicted.view(-1, 1), 0)  # Set mode probabilities to 0
+            other_probabilities.scatter_(1, batch_predictions.view(-1, 1), 0)  # Set mode probabilities to 0
             max_other_probabilities, _ = torch.max(other_probabilities, dim=1, keepdim=True)
             variational_ratio = 1.0 - mode_probabilities / max_other_probabilities
             uncertainties.extend(variational_ratio.cpu().numpy())
 
-    return guesses_are_correct, uncertainties, sample_labels
+    return predictions, uncertainties, targets
 
 def calculate_variational_ratio_dropout_uncertainties(model, dataloader, class_names, device, num_samples=100):
     model.eval()  # Set the model to evaluation mode
-    guesses_are_correct = []
+    final_predictions = []
     uncertainties = []
-    sample_labels = []
+    targets = []
 
     with torch.no_grad():
         # For every batch in the dataloader
@@ -355,15 +336,15 @@ def calculate_variational_ratio_dropout_uncertainties(model, dataloader, class_n
             inputs = inputs.to(device)
             labels = labels.to(device)
 
-            sample_labels.extend(labels.cpu().numpy())
+            targets.extend(labels.cpu().numpy())
 
             predictions = []
             for _ in range(num_samples):
                 # Get the outputs with dropout
                 outputs = model(inputs, dropout=True).to(device)  # Move outputs to device
-                predictions.append(F.softmax(outputs, dim=1).cpu().numpy())
+                predictions.append(F.softmax(outputs, dim=1))
 
-            predictions = torch.tensor(np.array(predictions)).to(device)
+            predictions = torch.stack(predictions, dim=0)
 
             # Compute mean probabilities and uncertainties based on Variational Ratios
             mean_probabilities = torch.mean(predictions, dim=0)
@@ -375,21 +356,19 @@ def calculate_variational_ratio_dropout_uncertainties(model, dataloader, class_n
             uncertainties.extend(variational_ratio.cpu().numpy())
 
             # Get the class predictions
-            _, predicted = torch.max(mean_probabilities, 1)
-            # Check and store whether predictions are correct
-            correct_guesses = (predicted == labels)
-            guesses_are_correct.extend(correct_guesses.cpu().numpy())
-            
+            _, batch_predictions = torch.max(mean_probabilities, 1)
+            final_predictions.extend(batch_predictions.cpu().numpy())
+
             # Print date/time for monitoring
             print(f"{dt.datetime.now()} - Batch {batch_idx + 1}/{len(dataloader)} processed")
 
-    return guesses_are_correct, uncertainties, sample_labels
+    return final_predictions, uncertainties, targets
 
 def calculate_entropy_uncertainties(model, dataloader, class_names, device):
     model.eval()  # Set the model to evaluation mode
-    guesses_are_correct = []
+    predictions = []
     uncertainties = []
-    sample_labels = []
+    targets = []
 
     with torch.no_grad():
         # For every batch in the dataloader
@@ -398,29 +377,27 @@ def calculate_entropy_uncertainties(model, dataloader, class_names, device):
             inputs = inputs.to(device)
             labels = labels.to(device)
 
-            sample_labels.extend(labels.cpu().numpy())
+            targets.extend(labels.cpu().numpy())
 
             # Get the outputs
             outputs = model(inputs, dropout=True).to(device)  # Move outputs to device
             # Get the softmax outputs
             probabilities = F.softmax(outputs, dim=1).to(device)  # Move probabilities to device
             # Get the class predictions
-            _, predicted = torch.max(outputs, 1)
-            # Check and store whether predictions are correct
-            correct_guesses = (predicted == labels)
-            guesses_are_correct.extend(correct_guesses.cpu().numpy())
+            _, batch_predictions = torch.max(outputs, 1)
+            predictions.extend(batch_predictions.cpu().numpy())
 
             # Compute uncertainty based on predictive entropy
             entropy = -torch.sum(probabilities * torch.log(probabilities + 1e-10), dim=1)  # Adding a small value to avoid log(0)
             uncertainties.extend(entropy.cpu().numpy())
 
-    return guesses_are_correct, uncertainties, sample_labels
+    return predictions, uncertainties, targets
 
 def calculate_predictive_entropy_uncertainties(model, dataloader, class_names, device, num_samples=100):
     model.eval()  # Set the model to evaluation mode
-    guesses_are_correct = []
+    predictions = []
     uncertainties = []
-    sample_labels = []
+    targets = []
 
     with torch.no_grad():  # No need to compute gradients during evaluation
         for batch_idx, (inputs, labels) in enumerate(dataloader):
@@ -428,7 +405,7 @@ def calculate_predictive_entropy_uncertainties(model, dataloader, class_names, d
             inputs = inputs.to(device)
             labels = labels.to(device)
 
-            sample_labels.extend(labels.cpu().numpy())
+            targets.extend(labels.cpu().numpy())
 
             entropy_list = []  # Initialize a list to store entropy for each sample
 
@@ -449,23 +426,19 @@ def calculate_predictive_entropy_uncertainties(model, dataloader, class_names, d
             uncertainties.extend(avg_entropy.cpu().numpy())
 
             # Get the class predictions based on the maximum probability
-            _, predicted = torch.max(outputs, 1)
-
-            # Determine correctness of predictions
-            correct_guesses = (predicted == labels)
-            guesses_are_correct.extend(correct_guesses.cpu().numpy())
+            _, batch_predictions = torch.max(outputs, 1)
+            predictions.extend(batch_predictions.cpu().numpy())
 
             # Print date/time for monitoring
             print(f"{dt.datetime.now()} - Batch {batch_idx + 1}/{len(dataloader)} processed")
 
-    return guesses_are_correct, uncertainties, sample_labels
-
+    return predictions, uncertainties, targets
 
 def calculate_mutual_information_uncertainties(model, dataloader, class_names, device):
     model.eval()  # Set the model to evaluation mode
-    guesses_are_correct = []
+    predictions = []
     uncertainties = []
-    sample_labels = []
+    targets = []
 
     with torch.no_grad():
         # For every batch in the dataloader
@@ -474,30 +447,28 @@ def calculate_mutual_information_uncertainties(model, dataloader, class_names, d
             inputs = inputs.to(device)
             labels = labels.to(device)
 
-            sample_labels.extend(labels.cpu().numpy())
+            targets.extend(labels.cpu().numpy())
 
             # Get the outputs
             outputs = model(inputs, dropout=False).to(device)  # Move outputs to device
             # Get the softmax outputs
             probabilities = F.softmax(outputs, dim=1).to(device)  # Move probabilities to device
             # Get the class predictions
-            _, predicted = torch.max(outputs, 1)
-            # Check and store whether predictions are correct
-            correct_guesses = (predicted == labels)
-            guesses_are_correct.extend(correct_guesses.cpu().numpy())
+            _, batch_predictions = torch.max(outputs, 1)
+            predictions.extend(batch_predictions.cpu().numpy())
 
             # Compute uncertainty based on mutual information
             uniform_distribution = torch.full_like(probabilities, 1.0 / probabilities.size(1)).to(device)  # Move uniform_distribution to device
             mutual_information = F.kl_div(probabilities.log(), uniform_distribution, reduction='none').sum(dim=1)
             uncertainties.extend(-mutual_information.cpu().numpy())
 
-    return guesses_are_correct, uncertainties, sample_labels
+    return predictions, uncertainties, targets
 
 def calculate_mutual_information_mc_dropout(model, dataloader, class_names, device, num_samples=100):
     model.eval()  # Set the model to evaluation mode
+    predictions = []
     uncertainties = []
-    guesses_are_correct = []
-    sample_labels = []
+    targets = []
 
     with torch.no_grad():  # No need to compute gradients during evaluation
         for batch_idx, (inputs, labels) in enumerate(dataloader):
@@ -505,7 +476,7 @@ def calculate_mutual_information_mc_dropout(model, dataloader, class_names, devi
             inputs = inputs.to(device)
             labels = labels.to(device)
 
-            sample_labels.extend(labels.cpu().numpy())
+            targets.extend(labels.cpu().numpy())
 
             logits_list = []  # Initialize a list to store logits for each sample
 
@@ -532,15 +503,13 @@ def calculate_mutual_information_mc_dropout(model, dataloader, class_names, devi
             uncertainties.extend(-avg_mutual_information.cpu().numpy())
 
             # Determine correctness of predictions
-            _, predicted = torch.max(logits_tensor.mean(dim=0), 1)
-
-            correct_guesses = (predicted == labels)
-            guesses_are_correct.extend(correct_guesses.cpu().numpy())
+            _, batch_predictions = torch.max(logits_tensor.mean(dim=0), 1)
+            predictions.extend(batch_predictions.cpu().numpy())
 
             # Print date/time for monitoring
             print(f"{dt.datetime.now()} - Batch {batch_idx + 1}/{len(dataloader)} processed")
 
-    return guesses_are_correct, uncertainties, sample_labels
+    return predictions, uncertainties, targets
 
 def smooth_calcs(risks):
     # Interpolate the data for smoother curves
@@ -590,13 +559,13 @@ def calculate_aurc(risks_list, labels_list, x_smooth_percentage_interp, x_smooth
     print("Label" + " " * (max_label_length - 5) + "\tAURC")
     print("-" * (max_label_length + 15))
     for label, aurc_full in aurc_full_list:
-        print(f"{label}" + " " * (max_label_length - len(label) + 5) + f"\t{aurc_full:.4f}")
+        print(f"{label}" + " " * (max_label_length - len(label) + 5) + f"\t{aurc_full}")
     
     print("\nAURC (20% cutoff):")
     print("Label" + " " * (max_label_length - 5) + "\tAURC")
     print("-" * (max_label_length + 15))
     for label, aurc_cutoff in aurc_cutoff_list:
-        print(f"{label}" + " " * (max_label_length - len(label) + 5) + f"\t{aurc_cutoff:.4f}")
+        print(f"{label}" + " " * (max_label_length - len(label) + 5) + f"\t{aurc_cutoff}")
 
     return aurc_full_list, aurc_cutoff_list
 
@@ -614,7 +583,7 @@ def plot_risk_coverage(risks_list, labels_list, x_smooth_percentage_interp, x_sm
 
     # x-axis label with a percentage
     plt.xlabel('Coverage')
-    plt.ylabel('1 - Mean Class Accuracy')
+    plt.ylabel('Σ(Cost / Maximum Cost)')
     plt.title(f"Risk vs. Coverage {save_dir}")
 
     # Add a vertical line at approximately 20% coverage
