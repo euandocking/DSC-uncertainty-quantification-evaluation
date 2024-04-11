@@ -39,14 +39,13 @@ def calculate_risks(predictions, uncertainties, targets, cost_matrix):
     risks = []
 
     while uncertainties:
-        risk = 0
-        for prediction, target in zip(predictions, targets):
-            risk += cost_matrix[target][prediction]
-        
-        max_possible_risk = np.max(cost_matrix) * len(predictions)
-        normalized_risk = risk / max_possible_risk
+        costs = []
 
-        risks.append(normalized_risk)
+        for prediction, target in zip(predictions, targets):
+            costs.append(cost_matrix[target][prediction])
+
+        risk = np.mean(costs)
+        risks.append(risk)
         
         # Remove results for the least certain sample
         max_uncertainty_index = np.argmax(uncertainties)
@@ -583,7 +582,7 @@ def plot_risk_coverage(risks_list, labels_list, x_smooth_percentage_interp, x_sm
 
     # x-axis label with a percentage
     plt.xlabel('Coverage')
-    plt.ylabel('Σ(Cost / Maximum Cost)')
+    plt.ylabel('Mean Cost')
     plt.title(f"Risk vs. Coverage {save_dir}")
 
     # Add a vertical line at approximately 20% coverage
